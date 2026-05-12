@@ -164,12 +164,15 @@ def transition_start_time(cpstat, tr):
     vars = [cpstat.n_changes_norm.val,
             #cpstat.frac_attack_changes.val - 0.5,
             #cpstat.returntime_median_overln2.val,
-            cpstat.instability_norm[0].val,
-            cpstat.frac_pixdiff_stable_vs_swref.val,
-            cpstat.frac_pixdiff_inst_vs_stable_norm.val,
+            cpstat.frac_pixdiff_inst_vs_swref.val,
+            #cpstat.frac_pixdiff_stable_vs_swref.val,
             #1 - cpstat.frac_defenseonly_users.val - cpstat.frac_bothattdef_users.val - 0.5, #attackonly - 0.5
-            cpstat.cumul_attack_timefrac.val,
             ]
+    if cpstat.compute_vars['attackdefense'] > 0: 
+        vars.append(cpstat.cumul_attack_timefrac.val)
+    if cpstat.compute_vars['stability'] > 0:
+        vars.append(cpstat.instability_norm[0].val)
+        vars.append(cpstat.frac_pixdiff_inst_vs_stable_norm.val)
 
     halfmax_times = np.zeros(len(vars))
 

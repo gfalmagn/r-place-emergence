@@ -256,6 +256,19 @@ class CanvasPartStatistics(object):
         Same as above, but without dividing by n_users.
         Kept if compute_vars['attackdefense'] > 1
             Set in comp.main_variables()
+    n_ingroup_changes
+    n_outgroup_changes
+    n_ingrouponly_users
+    n_outgrouponly_users
+    n_bothinout_users : TimeSeries, n_pts = n_t_bins+1
+        In-group / out-group change and user counts per time bin.
+            Needs compute_vars['inoutgroup'] > 0.
+            Set in comp.main_variables() and comp.num_changes_and_users()
+    ingroup_users_vst 
+    outgroup_users_vst: 1d object array of length n_t_bins+1
+        Unique user IDs with at least one in-group (or out-group) change in each time bin.
+        Kept if compute_vars['inoutgroup'] > 1.
+            Set in comp.main_variables() and comp.num_changes_and_users()
     frac_attack_changes_image : array of size n_t_bins, of 2d numpy arrays.
         Each element is a pixels image info (2d numpy array containing color indices)
         Image containing, for each pixel, the fraction of pixel changes that are attacking, for each time step
@@ -441,6 +454,8 @@ class CanvasPartStatistics(object):
         self.n_ingrouponly_users = ts.TimeSeries()
         self.n_outgrouponly_users = ts.TimeSeries()
         self.n_bothinout_users = ts.TimeSeries()
+        self.ingroup_users_vst = None
+        self.outgroup_users_vst = None
         self.num_edge_pixels = ts.TimeSeries()
         self.n_bothinout_users_lifetime = None
         self.n_ingrouponly_users_lifetime = None
@@ -516,21 +531,22 @@ class CanvasPartStatistics(object):
                             ref_im_const=ref_im_const)
 
         # extract shift quantities from cross correlation: minimum, position of the minimum, and slope of a linear fit
-        crosscorr_all = np.array([self.crosscorr[i].val for i in range(1, len(self.crosscorr_distances))]).T
-        self.image_shift_minpos.val = self.crosscorr_distances[1+np.argmin(crosscorr_all, axis=1)]
-        self.image_shift_min.val = np.min(crosscorr_all, axis=1)
-        # slope using the direct least squares formula
-        w = np.asarray([1]*(int(len(self.crosscorr_distances)/2)-1) # weights to increase the influence of sparser high distance points
-                     + [2]*(len(self.crosscorr_distances)-int(len(self.crosscorr_distances)/2)))
-        w_sum = np.sum(w)
-        x_mean = np.sum(w * self.crosscorr_distances[1:]) / w_sum
-        y_mean = np.sum(w * crosscorr_all, axis=1, keepdims=True) / w_sum
-        x_c = self.crosscorr_distances[1:] - x_mean
-        y_c = crosscorr_all - y_mean
-        self.image_shift_slope.val = np.sum(w * x_c * y_c, axis=1) / np.sum(w * x_c ** 2)
-        del crosscorr_all, x_c, y_c, y_mean, x_mean, w, w_sum
-        if self.compute_vars['clustering'] <= 1:
-            del self.crosscorr, self.ripley, self.dist_average # keep only ripley_norm and dist_average_norm
+        if self.compute_vars['clustering'] > 0:
+            crosscorr_all = np.array([self.crosscorr[i].val for i in range(1, len(self.crosscorr_distances))]).T
+            self.image_shift_minpos.val = self.crosscorr_distances[1+np.argmin(crosscorr_all, axis=1)]
+            self.image_shift_min.val = np.min(crosscorr_all, axis=1)
+            # slope using the direct least squares formula
+            w = np.asarray([1]*(int(len(self.crosscorr_distances)/2)-1) # weights to increase the influence of sparser high distance points
+                        + [2]*(len(self.crosscorr_distances)-int(len(self.crosscorr_distances)/2)))
+            w_sum = np.sum(w)
+            x_mean = np.sum(w * self.crosscorr_distances[1:]) / w_sum
+            y_mean = np.sum(w * crosscorr_all, axis=1, keepdims=True) / w_sum
+            x_c = self.crosscorr_distances[1:] - x_mean
+            y_c = crosscorr_all - y_mean
+            self.image_shift_slope.val = np.sum(w * x_c * y_c, axis=1) / np.sum(w * x_c ** 2)
+            del crosscorr_all, x_c, y_c, y_mean, x_mean, w, w_sum
+            if self.compute_vars['clustering'] <= 2:
+                del self.crosscorr, self.ripley, self.dist_average # keep only ripley_norm and dist_average_norm
 
         # ratio variables and normalizations
         self.ratios_and_normalizations()
@@ -558,17 +574,19 @@ class CanvasPartStatistics(object):
         else:
             self.n_transitions = 0
 
-        # calculate variance over ~10 most recent timesteps
-        def rolling_mean_squares(v, nroll):
-            sq = pd.Series(0.5 * (nroll/(nroll-1)) * v**2)
-            return np.array(sq.rolling(window=nroll, min_periods=1).mean())
-        self.variance_from_frac_pixdiff_inst.val = rolling_mean_squares(self.frac_pixdiff_inst_vs_inst_norm.val, 
-                                                                        self.frac_pixdiff_inst_vs_inst_norm.sw_width_ews)
+        if compute_vars['transitions'] > 1 or compute_vars['entropy'] > 0:
+            # calculate variance over ~10 most recent timesteps
+            def rolling_mean_squares(v, nroll):
+                sq = pd.Series(0.5 * (nroll/(nroll-1)) * v**2)
+                return np.array(sq.rolling(window=nroll, min_periods=1).mean())
+            self.variance_from_frac_pixdiff_inst.val = rolling_mean_squares(self.frac_pixdiff_inst_vs_inst_norm.val, 
+                                                                            self.frac_pixdiff_inst_vs_inst_norm.sw_width_ews)
 
         # calculate kendall tau's
         self.returnrate.set_kendall_tau()
         self.returntime[0].set_kendall_tau()
-        self.instability_norm[0].set_kendall_tau()
+        if self.compute_vars['stability'] > 0:
+            self.instability_norm[0].set_kendall_tau()
         self.variance_multinom.set_kendall_tau()
         self.variance_subdom.set_kendall_tau()
         self.variance2.set_kendall_tau()
@@ -659,59 +677,67 @@ class CanvasPartStatistics(object):
            and self.compute_vars['other'] > 0
 
     def ratios_and_normalizations(self):
-        self.instability_norm = np.empty(4, dtype=object) 
-        for k in range(0,4):
-            self.instability_norm[k] = self.ts_init( (1 - self.stability[k].val) / self.t_norm )
-        self.n_changes_norm = self.ts_init( util.divide_treatzero(self.n_changes.val / self.t_norm, self.area_vst.val, 0, 0) )
-        self.frac_pixdiff_stable_vs_swref = self.ts_init( util.divide_treatzero(self.diff_pixels_stable_vs_swref.val, self.area_vst.val, 0, 0) )
-        self.frac_pixdiff_inst_vs_swref = self.ts_init( util.divide_treatzero(self.diff_pixels_inst_vs_swref.val, self.area_vst.val, 0, 0) )
-        self.frac_pixdiff_inst_vs_swref_forwardlook = self.ts_init( util.divide_treatzero(self.diff_pixels_inst_vs_swref_forwardlook.val, self.area_vst.val, 0, 0) )
-        self.frac_pixdiff_inst_vs_inst_norm = self.ts_init( util.divide_treatzero(self.diff_pixels_inst_vs_inst.val / self.t_norm, self.area_vst.val, 0, 0) )
-        self.frac_pixdiff_inst_vs_stable_norm = self.ts_init( util.divide_treatzero(self.diff_pixels_inst_vs_stable.val / self.t_norm, self.area_vst.val, 0, 0) )
-        self.frac_pixdiff_inst_vs_inst_downscaled2 = self.ts_init( util.divide_treatzero(self.diff_pixels_inst_vs_inst_downscaled2.val / self.t_norm, self.area_vst.val/2**2, 0, 0) )
-        self.frac_pixdiff_inst_vs_inst_downscaled4 = self.ts_init( util.divide_treatzero(self.diff_pixels_inst_vs_inst_downscaled4.val / self.t_norm, self.area_vst.val/4**2, 0, 0) )
-        self.frac_pixdiff_inst_vs_inst_downscaled16pix = self.ts_init( util.divide_treatzero(self.diff_pixels_inst_vs_inst_downscaled16pix.val / self.t_norm, self.area_vst.val/self.maxscale**2, 0, 0) )
+        if self.compute_vars['stability'] > 0:
+            self.instability_norm = np.empty(4, dtype=object)
+            for k in range(0, 4):
+                self.instability_norm[k] = self.ts_init((1 - self.stability[k].val) / self.t_norm)
 
-        # users
-        self.n_users_norm = self.ts_init( util.divide_treatzero(self.n_users.val / self.t_norm, self.area_vst.val, 0, 0) )
-        self.n_users_sw_norm = self.ts_init( util.divide_treatzero(self.n_users_sw.val / (self.sw_width_sec / self.t_unit), self.area_vst.val, 0, 0) )
-        self.frac_users_new_vs_sw = self.ts_init( util.divide_treatzero(self.n_users_new_vs_sw.val, self.n_users.val, 0.5, 0.5) )
-        self.frac_users_new_vs_previoustime = self.ts_init( util.divide_treatzero(self.n_users_new_vs_previoustime.val, self.n_users.val, 0.5, 0.5) )
-        # changes per user on sliding window
-        n_changes_sw = np.zeros(self.n_t_bins+1)
-        n_changes_cumsum = np.cumsum(self.n_changes.val) # cumsum[i] is the sum of values in indices [0, i] with i included
-        sw = self.sw_width
-        n_changes_sw[0:sw] = n_changes_cumsum[0:sw]
-        n_changes_sw[sw:] = n_changes_cumsum[sw:] - n_changes_cumsum[:(-sw)]
-        self.changes_per_user_sw = self.ts_init( util.divide_treatzero(n_changes_sw, self.n_users_sw.val, 1, 1) )
+        self.n_changes_norm = self.ts_init(util.divide_treatzero(self.n_changes.val / self.t_norm, self.area_vst.val, 0, 0))
+        if self.compute_vars['attackdefense'] > 0:
+            self.n_users_norm = self.ts_init(util.divide_treatzero(self.n_users.val / self.t_norm, self.area_vst.val, 0, 0))
+            self.n_users_sw_norm = self.ts_init(util.divide_treatzero(self.n_users_sw.val / (self.sw_width_sec / self.t_unit), self.area_vst.val, 0, 0))
+            self.frac_users_new_vs_sw = self.ts_init(util.divide_treatzero(self.n_users_new_vs_sw.val, self.n_users.val, 0.5, 0.5))
+            self.frac_users_new_vs_previoustime = self.ts_init(util.divide_treatzero(self.n_users_new_vs_previoustime.val, self.n_users.val, 0.5, 0.5))
 
-        # attack-defense ratios
-        self.frac_attack_changes = self.ts_init( util.divide_treatzero(self.n_changes.val - self.n_defense_changes.val, self.n_changes.val, 0.5, 0.5) )
-        self.frac_defenseonly_users = self.ts_init( util.divide_treatzero(self.n_defenseonly_users.val - self.n_bothattdef_users.val, self.n_users.val, 0.5, 0.5) )
-        self.frac_bothattdef_users = self.ts_init( util.divide_treatzero(self.n_bothattdef_users.val, self.n_users.val, 0.5, 0.5) )
-        self.frac_attackonly_users = self.ts_init( util.divide_treatzero(self.n_users.val - self.n_defenseonly_users.val - self.n_bothattdef_users.val, self.n_users.val, 0.5, 0.5) )
-        # for entropy
-        self.entropy = self.ts_init( util.divide_treatzero(self.size_compressed.val, self.area_vst.val) )
-        self.entropy_stab_im = self.ts_init(util.divide_treatzero(self.size_compr_stab_im.val, self.area_vst.val))
-        self.entropy_bmpnorm = self.ts_init( util.divide_treatzero(self.size_compressed.val, self.size_uncompressed.val, 0, 0) )
-        self.entropy.val[0] = 0
-        self.entropy_bmpnorm.val[0] = 0
-        idx_dividebyzero = np.where(self.area_vst.val == 0)
-        self.entropy.val[idx_dividebyzero] = self.entropy_bmpnorm.val[idx_dividebyzero] * 3.2  # typical factor hard-coded here
-        # for wavelets
-        self.wavelet_high_to_low = self.ts_init(util.divide_treatzero(self.wavelet_high_freq.val, self.wavelet_low_freq.val)) # sets nan to 1
-        self.wavelet_mid_to_low = self.ts_init(util.divide_treatzero(self.wavelet_mid_freq.val, self.wavelet_low_freq.val))
-        self.wavelet_high_to_mid = self.ts_init(util.divide_treatzero(self.wavelet_high_freq.val, self.wavelet_mid_freq.val))
-        self.wavelet_high_to_low_tm = self.ts_init(util.divide_treatzero(self.wavelet_high_freq_tm.val, self.wavelet_low_freq_tm.val)) # sets nan to 1
-        #clustering
-        if self.ripley_distances[0] == 2:
-            self.ripley_norm[0] = self.ts_init( util.divide_treatzero(self.ripley_norm[0].val, np.sqrt(self.area_vst.val)) )
-        self.image_shift_minpos = self.ts_init( util.divide_treatzero(self.image_shift_minpos.val, np.sqrt(self.area_vst.val)) )
-        # other
-        self.frac_moderator_changes = self.ts_init( util.divide_treatzero(self.n_moderator_changes.val, self.n_changes.val, 0, 0) )
-        self.frac_cooldowncheat_changes = self.ts_init( util.divide_treatzero(self.n_cooldowncheat_changes.val, self.n_changes.val, 0, 0) )
-        self.frac_redundant_color_changes = self.ts_init( util.divide_treatzero(self.n_redundant_color_changes.val, self.n_changes.val, 0, 0) )
-        self.frac_redundant_coloranduser_changes = self.ts_init( util.divide_treatzero(self.n_redundant_coloranduser_changes.val, self.n_changes.val, 0, 0) )
+            n_changes_sw = np.zeros(self.n_t_bins + 1)
+            n_changes_cumsum = np.cumsum(self.n_changes.val)
+            sw = self.sw_width
+            n_changes_sw[0:sw] = n_changes_cumsum[0:sw]
+            n_changes_sw[sw:] = n_changes_cumsum[sw:] - n_changes_cumsum[:(-sw)]
+            self.changes_per_user_sw = self.ts_init(util.divide_treatzero(n_changes_sw, self.n_users_sw.val, 1, 1))
+
+            self.frac_attack_changes = self.ts_init(util.divide_treatzero(self.n_changes.val - self.n_defense_changes.val, self.n_changes.val, 0.5, 0.5))
+            self.frac_defenseonly_users = self.ts_init(util.divide_treatzero(self.n_defenseonly_users.val - self.n_bothattdef_users.val, self.n_users.val, 0.5, 0.5))
+            self.frac_bothattdef_users = self.ts_init(util.divide_treatzero(self.n_bothattdef_users.val, self.n_users.val, 0.5, 0.5))
+            self.frac_attackonly_users = self.ts_init(util.divide_treatzero(self.n_users.val - self.n_defenseonly_users.val - self.n_bothattdef_users.val, self.n_users.val, 0.5, 0.5))
+
+        if self.compute_vars['stability'] > 0 and self.compute_vars['entropy'] > 0:
+            self.frac_pixdiff_stable_vs_swref = self.ts_init(util.divide_treatzero(self.diff_pixels_stable_vs_swref.val, self.area_vst.val, 0, 0))
+            self.frac_pixdiff_inst_vs_stable_norm = self.ts_init(util.divide_treatzero(self.diff_pixels_inst_vs_stable.val / self.t_norm, self.area_vst.val, 0, 0))
+
+        if self.compute_vars['transitions'] > 0:
+            self.frac_pixdiff_inst_vs_swref = self.ts_init(util.divide_treatzero(self.diff_pixels_inst_vs_swref.val, self.area_vst.val, 0, 0))
+            self.frac_pixdiff_inst_vs_swref_forwardlook = self.ts_init(util.divide_treatzero(self.diff_pixels_inst_vs_swref_forwardlook.val, self.area_vst.val, 0, 0))
+
+        if self.compute_vars['entropy'] > 0 or self.compute_vars['transitions'] > 1:
+            self.frac_pixdiff_inst_vs_inst_norm = self.ts_init(util.divide_treatzero(self.diff_pixels_inst_vs_inst.val / self.t_norm, self.area_vst.val, 0, 0))
+            self.frac_pixdiff_inst_vs_inst_downscaled2 = self.ts_init(util.divide_treatzero(self.diff_pixels_inst_vs_inst_downscaled2.val / self.t_norm, self.area_vst.val / 2**2, 0, 0))
+            self.frac_pixdiff_inst_vs_inst_downscaled4 = self.ts_init(util.divide_treatzero(self.diff_pixels_inst_vs_inst_downscaled4.val / self.t_norm, self.area_vst.val / 4**2, 0, 0))
+            self.frac_pixdiff_inst_vs_inst_downscaled16pix = self.ts_init(util.divide_treatzero(self.diff_pixels_inst_vs_inst_downscaled16pix.val / self.t_norm, self.area_vst.val / self.maxscale**2, 0, 0))
+            self.entropy = self.ts_init(util.divide_treatzero(self.size_compressed.val, self.area_vst.val))
+            self.entropy_bmpnorm = self.ts_init(util.divide_treatzero(self.size_compressed.val, self.size_uncompressed.val, 0, 0))
+            self.entropy.val[0] = 0
+            self.entropy_bmpnorm.val[0] = 0
+            idx_dividebyzero = np.where(self.area_vst.val == 0)
+            self.entropy.val[idx_dividebyzero] = self.entropy_bmpnorm.val[idx_dividebyzero] * 3.2
+            self.wavelet_high_to_low = self.ts_init(util.divide_treatzero(self.wavelet_high_freq.val, self.wavelet_low_freq.val))
+            self.wavelet_mid_to_low = self.ts_init(util.divide_treatzero(self.wavelet_mid_freq.val, self.wavelet_low_freq.val))
+            self.wavelet_high_to_mid = self.ts_init(util.divide_treatzero(self.wavelet_high_freq.val, self.wavelet_mid_freq.val))
+            self.wavelet_high_to_low_tm = self.ts_init(util.divide_treatzero(self.wavelet_high_freq_tm.val, self.wavelet_low_freq_tm.val))
+
+        if self.compute_vars['stability'] > 1:
+            self.entropy_stab_im = self.ts_init(util.divide_treatzero(self.size_compr_stab_im.val, self.area_vst.val))
+
+        if self.compute_vars['clustering'] > 0 and self.ripley_norm is not None:
+            if self.ripley_distances[0] == 2:
+                self.ripley_norm[0] = self.ts_init(util.divide_treatzero(self.ripley_norm[0].val, np.sqrt(self.area_vst.val)))
+            self.image_shift_minpos = self.ts_init(util.divide_treatzero(self.image_shift_minpos.val, np.sqrt(self.area_vst.val)))
+
+        if self.compute_vars['other'] > 0:
+            self.frac_moderator_changes = self.ts_init(util.divide_treatzero(self.n_moderator_changes.val, self.n_changes.val, 0, 0))
+            self.frac_cooldowncheat_changes = self.ts_init(util.divide_treatzero(self.n_cooldowncheat_changes.val, self.n_changes.val, 0, 0))
+            self.frac_redundant_color_changes = self.ts_init(util.divide_treatzero(self.n_redundant_color_changes.val, self.n_changes.val, 0, 0))
+            self.frac_redundant_coloranduser_changes = self.ts_init(util.divide_treatzero(self.n_redundant_coloranduser_changes.val, self.n_changes.val, 0, 0))
 
     def search_transitions(self, cpart):
         par = self.transition_param
@@ -899,7 +925,7 @@ class CanvasPartStatistics(object):
             self.n_used_colors[k].savename = filepath(labs[k]+'_n_used_colors')
 
         if self.compute_vars['clustering'] > 0:
-            dist = [str(self.ripley_distances[0]), '20\% of size', '50\% of size']
+            dist = [str(self.ripley_distances[0]), '20%% of size', '50%% of size']
             for k in range(0,len(self.ripley_distances)):
                 if self.compute_vars['clustering'] > 1:
                     self.ripley[k].desc_long = 'Ripley\'s K function, at distance ' + dist[k]  
@@ -1046,6 +1072,11 @@ class CanvasPartStatistics(object):
         self.autocorr_multinom.savename = filepath('autocorr_multinom')
         self.autocorr_multinom.label = 'autocorr_multinom'
 
+        if self.compute_vars['inoutgroup'] > 1:
+            self.ingroup_users_vst_desc_short = 'In-group users in this time step'
+            self.ingroup_users_vst_desc_long = 'Unique user IDs with at least one in-group change in each time step.'
+            self.outgroup_users_vst_desc_short = 'Out-group users in this time step'
+            self.outgroup_users_vst_desc_long = 'Unique user IDs with at least one out-group change in each time step.'
 
         #self.autocorr.desc_long = 'autocorr'
         #self.autocorr.desc_short = 'autocorr'

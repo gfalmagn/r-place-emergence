@@ -312,7 +312,7 @@ def main_variables(cpart,
     tran = cpst.compute_vars['transitions']
     other = cpst.compute_vars['other']
     ews = cpst.compute_vars['ews']
-    inout = cpst.compute_vars['inout']
+    inout = cpst.compute_vars['inoutgroup']
     lifetm = cpst.compute_vars['lifetime_vars']
     void_attack = cpst.compute_vars['void_attack']
     cluster = cpst.compute_vars['clustering']
@@ -406,6 +406,12 @@ def main_variables(cpart,
     cpst.n_ingrouponly_users = cpst.ts_init(np.zeros(n_tlims))
     cpst.n_outgrouponly_users = cpst.ts_init(np.zeros(n_tlims))
     cpst.n_bothinout_users = cpst.ts_init(np.zeros(n_tlims))
+    if inout > 1:
+        cpst.ingroup_users_vst = np.empty(n_tlims, dtype=object)
+        cpst.outgroup_users_vst = np.empty(n_tlims, dtype=object)
+        for j in range(n_tlims):
+            cpst.ingroup_users_vst[j] = np.array([], dtype=np.int32)
+            cpst.outgroup_users_vst[j] = np.array([], dtype=np.int32)
     cpst.num_edge_pixels = cpst.ts_init(np.zeros(n_tlims))
     cpst.frac_attack_changes_image = np.full((n_tlims, cpart.width(1), cpart.width(0)), 1, dtype=np.float16) if attdef > 1 else None
     cpst.size_uncompressed = cpst.ts_init(np.zeros(n_tlims))
@@ -819,15 +825,18 @@ def main_variables(cpart,
                 # users
                 ingroup_users_step = np.unique(cpart.user(t_inds_active_fwd)[ingroup_changes])
                 outgroup_users_step = np.unique(cpart.user(t_inds_active_fwd)[outgroup_changes])
-                bothinout_users_step = (np.intersect1d(ingroup_users_step, outgroup_users_step))
+                bothinout_users_step = np.intersect1d(ingroup_users_step, outgroup_users_step)
                 ingroup_users = np.concatenate((ingroup_users, np.atleast_1d(ingroup_users_step)))
                 outgroup_users = np.concatenate((outgroup_users, np.atleast_1d(outgroup_users_step)))
                 bothinout_users = np.concatenate((bothinout_users, np.atleast_1d(bothinout_users_step)))
                 cpst.n_bothinout_users.val[back_index+1] = len(bothinout_users_step)
                 cpst.n_outgrouponly_users.val[back_index+1] = len(outgroup_users_step) - len(bothinout_users_step)
                 cpst.n_ingrouponly_users.val[back_index+1] = len(ingroup_users_step) - len(bothinout_users_step)
+                if cpst.ingroup_users_vst is not None:
+                    cpst.ingroup_users_vst[back_index+1] = np.copy(ingroup_users_step)
+                    cpst.outgroup_users_vst[back_index+1] = np.copy(outgroup_users_step)
 
-                if inout > 1:
+                if inout > 1 and (attdef > 1 or tran > 1):
                     edges = label_edge_map(cpst.refimage_sw[back_index])
                     cpst.num_edge_pixels.val[back_index] = np.count_nonzero(edges)
 
@@ -1064,17 +1073,21 @@ def num_changes_and_users(cpart, cpst,
 
             outgroup_changes = np.invert(ingroup_changes)
             outgroup_inds = t_inds_active_fwd[outgroup_changes]
-            cpst.n_ingroup_changes.val[t_step + 1 - cpst.sw_width] = np.count_nonzero(ingroup_changes)
-            cpst.n_outgroup_changes.val[t_step + 1 - cpst.sw_width] = np.count_nonzero(outgroup_changes)
+            idx = t_step + 1 - cpst.sw_width
+            cpst.n_ingroup_changes.val[idx] = np.count_nonzero(ingroup_changes)
+            cpst.n_outgroup_changes.val[idx] = np.count_nonzero(outgroup_changes)
 
             # users
             ingroup_users = np.unique(cpart.user(t_inds_active_fwd)[ingroup_changes])
             outgroup_users = np.unique(cpart.user(t_inds_active_fwd)[outgroup_changes])
             inout_users = np.intersect1d(ingroup_users, outgroup_users)
-            cpst.n_bothinout_users.val[t_step + 1 - cpst.sw_width] = len(inout_users)
+            cpst.n_bothinout_users.val[idx] = len(inout_users)
             num_ingroup_users = len(ingroup_users)
-            cpst.n_outgrouponly_users.val[t_step + 1 - cpst.sw_width] = len(outgroup_users) - cpst.n_bothinout_users.val[t_step + 1 - cpst.sw_width]
-            cpst.n_ingrouponly_users.val[t_step + 1 - cpst.sw_width] = num_ingroup_users - cpst.n_bothinout_users.val[t_step + 1 - cpst.sw_width]
+            cpst.n_outgrouponly_users.val[idx] = len(outgroup_users) - cpst.n_bothinout_users.val[idx]
+            cpst.n_ingrouponly_users.val[idx] = num_ingroup_users - cpst.n_bothinout_users.val[idx]
+            if cpst.ingroup_users_vst is not None:
+                cpst.ingroup_users_vst[idx] = np.copy(ingroup_users)
+                cpst.outgroup_users_vst[idx] = np.copy(outgroup_users)
 
     # count attack and defense changes for each pixel of the canvas
     if save_ratio_pixels:
@@ -1212,7 +1225,7 @@ def cross_correlation(cpst, i, itmin, r, binning, crosscorr_radial_ref):
     cols = np.flatnonzero(np.isin(np.arange(var.NUM_COLORS), im1) & np.isin(np.arange(var.NUM_COLORS), im2))
 
     # Calculate the cross-correlation between two images, for each shift value
-    for c in (cols if cols != [] else [31]):
+    for c in (cols if len(cols) > 0 else [31]):
         mask1 = (im1 == c).astype(np.float32) # float32 faster for fftconvolve
         mask2 = (im2 == c).astype(np.float32)
         # for this color, subtract the crosscorr of the image with itself, from the crosscorr between t and t-1

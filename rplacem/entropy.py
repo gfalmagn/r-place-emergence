@@ -4,19 +4,68 @@ import math
 import pywt
 from hilbertcurve.hilbertcurve import HilbertCurve
 from numba import jit
-import sweetsourcod
-from sweetsourcod.lempel_ziv import lempel_ziv_complexity
-from sweetsourcod.hilbert import get_hilbert_mask
-from sweetsourcod.zipper_compress import get_comp_size_bytes
-from sweetsourcod.block_entropy import block_entropy
 from Levenshtein import distance as levenshtein_distance
+from skimage.util.shape import view_as_blocks as _view_as_blocks
 import scipy
 from rplacem import var as var
 import os
 import pickle
 import collections
-import skimage
 import warnings
+
+
+def get_hilbert_mask(lattice_boxv):
+    side_x, side_y = np.asarray(lattice_boxv, dtype=int)
+    side = 2 ** math.ceil(math.log2(max(side_x, side_y)))
+    order = int(math.log2(side))
+    hilbert_curve = HilbertCurve(order, 2)
+    indices = []
+    for y in range(side):
+        for x in range(side):
+            indices.append((hilbert_curve.distance_from_point([x, y]), y * side + x))
+    indices.sort(key=lambda item: item[0])
+    return np.asarray([idx for _, idx in indices], dtype=np.int64)
+
+
+def _compressed_length(data):
+    return len(zlib.compress(np.asarray(data, dtype=np.uint8).tobytes()))
+
+
+def lempel_ziv_complexity(x, method='lz77'):
+    compressed_length = _compressed_length(x)
+    if method == 'lz77':
+        return compressed_length, compressed_length
+    if method == 'lz78':
+        return compressed_length
+    raise NotImplementedError
+
+
+def _lz77_complexity(x):
+    res = lempel_ziv_complexity(x, 'lz77')
+    if isinstance(res, tuple):
+        return res
+    return res, res
+
+
+def _lz78_complexity(x):
+    res = lempel_ziv_complexity(x, 'lz78')
+    if isinstance(res, tuple):
+        return res[0]
+    return res
+
+
+def get_comp_size_bytes(x, algorithm='deflate', **kwargs):
+    compressed_length = _compressed_length(x)
+    return compressed_length, None, None
+
+
+def block_entropy(x, *args, **kwargs):
+    values = np.asarray(x).ravel()
+    if values.size == 0:
+        return 0.0
+    _, counts = np.unique(values, return_counts=True)
+    probabilities = counts / np.sum(counts)
+    return float(-np.sum(probabilities * np.log2(probabilities)))
 
 
 def calc_size(pixels):
@@ -38,8 +87,8 @@ def calc_compressed_size(pixels, flattening='hilbert_sweetsourcod', compression=
         2d pixel info
     flattening: string, optional
         Type of flattening used. if "hilbert_sweetsourcod", uses the hilbert curve flattening
-        from the sweetsourcod package developed by Stefan Martiniani. if "ravel", then flattens
-        into a simple 1d array without taking advantage of the original 2d structure of the image.
+        from the sweetsourcod package developed by Stefan Martiniani, where the functions we use are copied in this project. 
+        if "ravel", then flattens into a simple 1d array without taking advantage of the original 2d structure of the image.
         "hilbert" is another implementation of the hilbert curve method.
 
     Returns
@@ -71,10 +120,10 @@ def calc_compressed_size(pixels, flattening='hilbert_sweetsourcod', compression=
         pixels_flat = pixels.flatten()
 
     if compression == 'LZ77':
-        len_compressed, _ = lempel_ziv_complexity(pixels_flat, 'lz77')
+        len_compressed, _ = _lz77_complexity(pixels_flat)
 
     if compression == 'LZ78':
-        len_compressed = lempel_ziv_complexity(pixels_flat, 'lz78')
+        len_compressed = _lz78_complexity(pixels_flat)
 
     if compression == 'DEFLATE':
         data = pixels_flat.tobytes()
@@ -322,7 +371,7 @@ def mode_downsample(image, factor):
     if main_h > 0 and main_w > 0:
         # Extract complete blocks
         main_region = image[:main_h * factor, :main_w * factor]
-        blocks = skimage.util.view_as_blocks(main_region, block_shape=(factor, factor))
+        blocks = _view_as_blocks(main_region, block_shape=(factor, factor))
         
         # Flatten blocks and compute modes
         flattened_blocks = blocks.reshape(main_h, main_w, -1)
@@ -590,13 +639,13 @@ def get_entropy_rate_lz77(x, extrapolate=True):
     nsites = len(x)
     if extrapolate:
         random_binary_sequence = np.random.randint(0, 2, nsites, dtype='uint8')
-        c_bin, sumlog_bin = lempel_ziv_complexity(random_binary_sequence, 'lz77')
+        c_bin, sumlog_bin = _lz77_complexity(random_binary_sequence)
         h_bound_bin = _get_entropy_rate(c_bin, nsites, norm=1, alphabetsize=np.unique(x).size, method='lz77')
         h_sumlog_bin = sumlog_bin
     else:
         h_bin = 1
         h_sumlog_bin = nsites
-    c, h_sumlog = lempel_ziv_complexity(x, 'lz77')
+    c, h_sumlog = _lz77_complexity(x)
     h_bound = _get_entropy_rate(c, nsites, norm=h_bound_bin, alphabetsize=np.unique(x).size, method='lz77')
     h_sumlog /= h_sumlog_bin
     return h_bound, h_sumlog
@@ -606,11 +655,11 @@ def get_entropy_rate_lz78(x, extrapolate=True):
     nsites = len(x)
     if extrapolate:
         random_binary_sequence = np.random.randint(0, 2, nsites, dtype='uint8')
-        c_bin = lempel_ziv_complexity(random_binary_sequence, 'lz78')
+        c_bin = _lz78_complexity(random_binary_sequence)
         h_bound_bin = _get_entropy_rate(c_bin, nsites, norm=1, alphabetsize=np.unique(x).size, method='lz78')
     else:
         h_bin = 1
-    c = lempel_ziv_complexity(x, 'lz78')
+    c = _lz78_complexity(x)
     h_bound = _get_entropy_rate(c, nsites, norm=h_bound_bin, alphabetsize=np.unique(x).size, method='lz78')
     return h_bound
 
